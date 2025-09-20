@@ -3,11 +3,11 @@ import requests
 import pathway as pw
 from pathway import debug
 import os
-import time
 import pandas as pd
 import google.generativeai as genai
 import json
 from pydantic import BaseModel, Field
+import re
 
 # --- 1. Setup & Configuration ---
 st.set_page_config(page_title="TaxWise AI", page_icon="💡", layout="centered")
@@ -37,7 +37,8 @@ def extract_entities_with_gemini(user_query: str) -> QueryDetails | None:
     """Uses Gemini to extract structured data from a user's question."""
     if not gemini_api_key: return None
     
-    model = genai.GenerativeModel("gemini-1.0-pro")
+    # CORRECTED MODEL NAME
+    model = genai.GenerativeModel("gemini-2.0-flash") 
     prompt = f"""
     From the following user query, extract the product, country of origin, and price in USD.
     Respond ONLY with a valid JSON object that matches this schema:
@@ -45,30 +46,62 @@ def extract_entities_with_gemini(user_query: str) -> QueryDetails | None:
 
     User Query: "{user_query}"
     """
+    
     try:
         response = model.generate_content(prompt)
-        # Clean up the response to make sure it's valid JSON
-        cleaned_response = response.text.strip().replace("```json", "").replace("```", "")
-        data = json.loads(cleaned_response)
-        return QueryDetails(**data)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        st.error("The AI could not understand the request. Please try rephrasing it to include a product, country, and price (e.g., '$1200 laptop from USA').")
+        # Use regex to find the JSON block within the AI's response
+        match = re.search(r"\{.*\}", response.text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            data = json.loads(json_str)
+            return QueryDetails(**data)
+        else:
+            st.error("The AI responded, but I couldn't find valid JSON data in its answer.")
+            return None
+    except Exception as e:
+        st.error(f"An error occurred during AI extraction: {e}")
         return None
 
-def generate_final_summary(details: dict) -> str:
-    """Generates the final human-friendly summary."""
-    if not gemini_api_key: return "Gemini API key is not configured."
-    model = genai.GenerativeModel("gemini-1.0-pro")
-    prompt = f"""
-    You are TaxWise AI. A user asked about a {details['product']} from {details['country']}.
-    The final, all-inclusive price is ₹{details['total_inr']:,.2f} INR. This was calculated from a base price of ${details['base_price_usd']:,.2f} plus ${details['tax_usd']:,.2f} in taxes/fees.
-    Explain this in 2-3 friendly sentences, emphasizing that this is the true cost with no hidden fees.
-    """
+def get_gemini_summary(details: dict) -> str:
+    """Generate a natural-language summary of the calculation with Gemini."""
+    if not gemini_api_key:
+        return "Gemini API key missing - cannot generate AI summary."
+
+    # Get currency symbol
+    currency_symbols = {
+        "USD": "$", "INR": "₹", "EUR": "€", "GBP": "£", 
+        "JPY": "¥", "CAD": "C$", "AUD": "A$", "CNY": "¥"
+    }
+    target_symbol = currency_symbols.get(details['target_currency'], details['target_currency'])
+    
+    # Create a fallback summary in case Gemini fails
+    fallback_summary = f"Final cost is {target_symbol}{details['total_converted']:,.2f}. This includes the product price, taxes, and fees."
+    
     try:
-        return model.generate_content(prompt).text
+        # Use a more reliable model version
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        
+        prompt = f"""
+        You are TaxWise AI. A user is importing a {details['product']} from {details['country']}.
+        Breakdown:
+        Base = ${details['base_price_usd']:,.2f}, 
+        Taxes = ${details['tax_usd']:,.2f}, 
+        Total = ${details['total_usd']:,.2f} USD 
+        → Final in {details['target_currency']} = {target_symbol}{details['total_converted']:,.2f} at {details['exchange_rate']:.2f}/{details['base_currency']}.
+
+        Write 2 short, friendly sentences starting with the final {details['target_currency']} cost. 
+        Reassure the user this includes everything (no hidden fees).
+        
+        If the tax rate is unusually high (>40%), add a warning about potential scams or suggest verifying with official sources.
+        """
+        
+        response = model.generate_content(prompt, timeout=5)  # Add timeout
+        if response and hasattr(response, 'text'):
+            return response.text
+        return fallback_summary
     except Exception as e:
-        st.error(f"Could not connect to Google AI: {e}")
-        return "Error generating AI summary."
+        st.error(f"Error generating AI summary: {str(e)}")
+        return fallback_summary
 
 # --- 3. Data Loading ---
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -77,7 +110,6 @@ if not os.path.exists(file_path):
     st.error("FATAL ERROR: `duty_taxes.csv` not found.")
     st.stop()
 
-# Use Pathway to create a LIVE table for real-time calculations.
 class TaxRule(pw.Schema):
     product_category: str; origin_country: str; tax_rate: float; fixed_fee_usd: float
 tax_rules_table = pw.io.csv.read(file_path, schema=TaxRule, mode="streaming", autocommit_duration_ms=50)
@@ -130,7 +162,7 @@ if st.button("Calculate True Final Cost", type="primary", use_container_width=Tr
                 }
 
                 with st.spinner("🤖 Calculating and generating final summary..."):
-                    summary = generate_final_summary(calculation_details)
+                    summary = get_gemini_summary(calculation_details)
 
                 st.subheader("💡 AI-Powered Answer")
                 st.markdown(summary)
