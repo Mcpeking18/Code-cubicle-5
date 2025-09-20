@@ -4,3 +4,4 @@ pathway
 google-generativeai
 pandas
 pydantic
+dotenv

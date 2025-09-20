@@ -9,6 +9,7 @@ import time
 from pydantic import BaseModel, Field
 import textwrap
 from typing import List, Optional
+from dotenv import load_dotenv
 
 # --- 1. Setup & Configuration ---
 st.set_page_config(
@@ -18,31 +19,25 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
-# --- Sidebar for API Key Configuration ---
+# Load environment variables from .env file
+load_dotenv()
+
+# Retrieve API keys from environment variables
+gemini_api_key = os.getenv("gemini_api_key")
+exchange_rate_api_key = os.getenv("exchange_rate_api_key")
+
+# --- Sidebar for Configuration Status ---
 with st.sidebar:
     st.title("⚙️ Configuration")
-    st.markdown(
-        """
-    1. Get your Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
-    2. Enter the key below to activate the app.
-    """
-    )
-    gemini_api_key = st.text_input(
-        "Gemini API Key", key="gemini_api_key", type="password"
-    )
-    st.markdown("---")
-    st.markdown(
-        """
-    Optionally, provide an [ExchangeRate-API](https://www.exchangerate-api.com/) key for higher reliability and more accurate, real-time rates.
-    """
-    )
-    exchange_rate_api_key = st.text_input(
-        "ExchangeRate-API Key (v6)",
-        key="exchange_rate_api_key",
-        type="password",
-        help="Enter your v6 API key here for better rate accuracy."
-    )
-    st.markdown("---")
+    st.markdown("API keys are loaded from the `.env` file.")
+    if gemini_api_key:
+        st.success("Gemini API Key: Configured ✅")
+    else:
+        st.error("Gemini API Key: Not found in `.env`. Please add `GEMINI_API_KEY` to the `.env` file.")
+    if exchange_rate_api_key:
+        st.success("ExchangeRate-API Key: Configured ✅")
+    else:
+        st.warning("ExchangeRate-API Key: Not found in `.env`. Using free tier API as fallback.")
 
 # --- 2. Pydantic Schemas ---
 class QueryDetails(BaseModel):
@@ -52,7 +47,6 @@ class QueryDetails(BaseModel):
     price_usd: float = Field(..., description="The price of the product in USD")
 
 # --- 3. Core Functions ---
-
 @st.cache_data(ttl=3600)  # Cache the exchange rate for 1 hour
 def get_live_exchange_rate(api_key=None, target_currency="INR"):
     """
@@ -71,7 +65,7 @@ def get_live_exchange_rate(api_key=None, target_currency="INR"):
         response.raise_for_status()
         data = response.json()
 
-        # CORRECTED LOGIC: Handle both 'rates' (v4) and 'conversion_rates' (v6)
+        # Handle both 'rates' (v4) and 'conversion_rates' (v6)
         rates_dict = data.get("conversion_rates") or data.get("rates")
 
         if data.get("result") == "success" and rates_dict and target_currency in rates_dict:
@@ -101,11 +95,7 @@ def load_tax_rules(file_path="duty_taxes.csv"):
         return None, None, []
     try:
         last_modified_time = os.path.getmtime(file_path)
-        
-        # FIX: Use pandas directly to read the CSV. This creates a standard,
-        # serializable DataFrame, which resolves the UnserializableReturnValueError.
         df = pd.read_csv(file_path)
-        
         unique_destinations = sorted(df['destination_country'].str.strip().unique().tolist())
         return df, last_modified_time, unique_destinations
     except Exception as e:
@@ -114,11 +104,13 @@ def load_tax_rules(file_path="duty_taxes.csv"):
 
 def extract_query_details(user_query: str) -> Optional[QueryDetails]:
     """Uses Gemini to extract structured data from the user's query."""
+    if not gemini_api_key:
+        st.error("Gemini API key not configured in `.env`. Please add `GEMINI_API_KEY`.")
+        return None
     try:
+        genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-        # FIX: Convert the Pydantic schema to a proper JSON string to ensure the
-        # AI model receives a well-formatted request. This resolves the validation error.
         schema_json = json.dumps(QueryDetails.model_json_schema(), indent=2)
 
         prompt = textwrap.dedent(f"""
@@ -130,16 +122,13 @@ def extract_query_details(user_query: str) -> Optional[QueryDetails]:
             """)
         response = model.generate_content(prompt)
         raw_text = response.text
-        # Use regex to find the JSON block, even if there's other text
         match = re.search(r"```json\s*(\{.*?\})\s*```|(\{.*?\})", raw_text, re.DOTALL)
         if not match:
             st.error("AI Error: Could not find a valid JSON object in the response.")
             st.write("AI Raw Output:", raw_text)
             return None
-        
-        # The regex will capture one of two groups. Prioritize the first group (with ```json), then the second.
-        json_str = match.group(1) or match.group(2)
 
+        json_str = match.group(1) or match.group(2)
         data = json.loads(json_str)
         return QueryDetails(**data)
     except Exception as e:
@@ -148,9 +137,11 @@ def extract_query_details(user_query: str) -> Optional[QueryDetails]:
 
 def generate_ai_summary(details: dict, comparison_df: pd.DataFrame) -> str:
     """Generates a human-friendly summary using Gemini, now including comparison results."""
+    if not gemini_api_key:
+        return "Gemini API key not configured in `.env`."
     try:
+        genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        # Find the best deal for the summary
         best_deal = comparison_df.sort_values(by="Total Cost (USD)").iloc[0]
         
         prompt = textwrap.dedent(f"""
@@ -175,7 +166,6 @@ def normalize(x: str) -> str:
     return str(x).lower().strip().replace("united states", "usa").replace("laptops", "laptop")
 
 # --- 4. Main App Interface ---
-
 st.title("💡 TaxWise AI")
 st.markdown("### Your real-time guide to transparent import pricing. ✈️")
 st.markdown("Instantly compare the true final cost of a product across different countries, with all taxes and duties included.")
@@ -211,9 +201,9 @@ with col2:
     )
 
 if st.button("Calculate & Compare True Cost", type="primary", use_container_width=True):
-    # 1. Validate all inputs first
+    # 1. Validate all inputs
     if not gemini_api_key:
-        st.error("Please enter your Gemini API Key in the sidebar to use the app.")
+        st.error("Please configure `GEMINI_API_KEY` in the `.env` file to use the app.")
         st.stop()
     if not user_question:
         st.warning("Please describe the item you are importing.")
@@ -225,17 +215,10 @@ if st.button("Calculate & Compare True Cost", type="primary", use_container_widt
         st.error("Could not load tax rules. Please check the `duty_taxes.csv` file.")
         st.stop()
 
-    # 2. Configure the API (just-in-time)
-    try:
-        genai.configure(api_key=gemini_api_key)
-    except Exception as e:
-        st.error(f"Failed to configure Gemini API. Please check your key. Error: {e}")
-        st.stop()
-
-    # 3. Start the processing pipeline
+    # 2. Start the processing pipeline
     extracted_data = None
     with st.spinner("🤖 AI is analyzing your question..."):
-        extracted_data = extract_query_details(user_question)
+        extracted_data = extract_query_details(user_query=user_question)
 
     if extracted_data:
         results = []
@@ -258,13 +241,10 @@ if st.button("Calculate & Compare True Cost", type="primary", use_container_widt
 
                 if not match.empty:
                     rule = match.iloc[0]
-                    # NOTE: Assuming all destinations use INR for now. A more advanced
-                    # version would fetch rates for each country's local currency.
                     exchange_rate = get_live_exchange_rate(exchange_rate_api_key, "INR")
 
                     duty_tax_usd = (extracted_data.price_usd * rule['tax_rate']) + rule['fixed_fee_usd']
                     total_cost_usd = extracted_data.price_usd + duty_tax_usd
-                    # For simplicity, we'll display final cost in the local currency (INR for now)
                     total_cost_local = total_cost_usd * exchange_rate
 
                     results.append({
@@ -272,7 +252,7 @@ if st.button("Calculate & Compare True Cost", type="primary", use_container_widt
                         "Base Price (USD)": extracted_data.price_usd,
                         "Taxes & Fees (USD)": duty_tax_usd,
                         "Total Cost (USD)": total_cost_usd,
-                        "Final Cost": f"₹{total_cost_local:,.2f}" # Assuming INR
+                        "Final Cost": f"₹{total_cost_local:,.2f}"
                     })
                 else:
                     results.append({
@@ -288,37 +268,30 @@ if st.button("Calculate & Compare True Cost", type="primary", use_container_widt
             st.subheader("✅ Calculation Complete!")
 
             comparison_df = pd.DataFrame(results)
-            # Create a numeric column for sorting before formatting
             comparison_df_sortable = comparison_df.copy()
             comparison_df_sortable['sort_col'] = pd.to_numeric(comparison_df_sortable['Total Cost (USD)'], errors='coerce')
-
 
             # --- AI Summary ---
             details = {
                 "product": extracted_data.product, "country": extracted_data.country,
                 "base_price_usd": extracted_data.price_usd
             }
-            # Only generate summary if there are valid results to compare
             if not comparison_df_sortable['sort_col'].dropna().empty:
-                 with st.spinner("✍️ AI is writing your summary..."):
-                     ai_summary = generate_ai_summary(details, comparison_df_sortable)
-                 st.markdown(ai_summary)
-
+                with st.spinner("✍️ AI is writing your summary..."):
+                    ai_summary = generate_ai_summary(details, comparison_df_sortable)
+                st.markdown(ai_summary)
 
             # --- Display Results Table ---
             st.markdown(f"**Comparison Breakdown** (1 USD ≈ ₹{get_live_exchange_rate(exchange_rate_api_key, 'INR'):.2f} INR)")
             rate_source = st.session_state.get('exchange_rate_source', 'N/A')
             st.caption(f"Currency rate via `{rate_source}`")
             
-            # Highlight the minimum cost row
             def highlight_min(s):
                 is_min = s == s.min()
                 return ['background-color: #28a745; color: white' if v else '' for v in is_min]
 
-            # Drop the sort column before displaying
             display_df = comparison_df_sortable.drop(columns=['sort_col']).set_index("Destination")
             
-            # Apply styling only if there are numeric values to compare
             if not comparison_df_sortable['sort_col'].dropna().empty:
                 st.dataframe(
                     display_df.style.format({
@@ -329,9 +302,6 @@ if st.button("Calculate & Compare True Cost", type="primary", use_container_widt
                     use_container_width=True
                 )
             else:
-                 st.dataframe(display_df, use_container_width=True)
-
-
+                st.dataframe(display_df, use_container_width=True)
         else:
-             st.error(f"Sorry, I couldn't find a tax rule for the requested item. Please check the data source or try another combination.")
-
+            st.error(f"Sorry, I couldn't find a tax rule for the requested item. Please check the data source or try another combination.")
