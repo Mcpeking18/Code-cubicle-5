@@ -1,4 +1,4 @@
-# 💡 TaxWise AI
+# 💡 TaxWise
 
 **TaxWise AI** is a real-time AI application built for the **Code Cubicle 5.0 Hackathon** (Track 2: Stale AI). It solves the problem of confusing and hidden import costs by allowing users to ask natural language questions and get the true, all-inclusive price of a product, including live duty taxes and up-to-the-second currency conversions.
 
