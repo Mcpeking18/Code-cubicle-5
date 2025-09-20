@@ -120,3 +120,5 @@ Built with ❤️ by **Team Code Blooded** for Code Cubicle 5.0.
 * Pramod Mohanty 
 * Riya Singh 
 * Vanshika Chawla
+
+It is still a prototype <3
