@@ -1,7 +1,5 @@
-product_category,origin_country,tax_rate,fixed_fee_usd
-laptop,USA,0.10,50
-laptop,Japan,0.12,40
-laptop,China,0.15,30
-smartphone,USA,0.08,20
-smartphone,Japan,0.09,25
-smartphone,Japan,0.09,25
+product_category,origin_country,destination_country,tax_rate,fixed_fee_usd
+laptop,USA,India,0.18,25
+laptop,Japan,India,0.22,30
+smartphone,USA,India,0.20,15
+smartphone,China,India,0.25,10
